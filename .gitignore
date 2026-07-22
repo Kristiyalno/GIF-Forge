@@ -1,0 +1,35 @@
+# --- GIF Forge runtime state ---
+# projects/ and settings/ ship as empty scaffolding; everything the app
+# writes into them at runtime (saved .gfp files, autosave, app settings,
+# keybinds) is local and shouldn't be committed.
+/projects/*
+!/projects/.gitkeep
+!/projects/.autosave/
+/projects/.autosave/*
+!/projects/.autosave/.gitkeep
+
+/settings/*
+!/settings/.gitkeep
+
+# --- Python ---
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+dist/
+*.egg-info/
+.eggs/
+.venv/
+venv/
+env/
+ENV/
+
+# --- Editors / OS ---
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
