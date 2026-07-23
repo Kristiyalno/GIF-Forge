@@ -33,9 +33,10 @@ Linux you may need `sudo apt install python3-tk`). Tested on Python 3.12.
   or reused files are only decoded once, and edits to a source file are
   picked up automatically.
 - **Projects** (`.gfp`, plain JSON): layer order, offsets, visibility,
-  locks, output size, Last Byte option, duration setting, theme, keybinds,
-  and the last output path. Source GIF pixel data is never embedded, only
-  file paths.
+  locks, output size, Last Byte option, duration setting, and theme, plus
+  the last output path. Source GIF pixel data is never embedded, only
+  file paths. Keybinds are global (one shared config for the whole app,
+  in `settings/keybinds.json`), not saved per project.
 - **Undo/redo** (20 levels), autosave with recovery-on-launch, an
   unsaved-changes indicator in the title bar, and recent projects (File >
   Open Recent, plus a small "recent projects" prompt on a fresh launch).

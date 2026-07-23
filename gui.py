@@ -201,18 +201,44 @@ class MainWindow(tk.Tk):
 
         left_container = ttk.Frame(self.paned, style="Panel.TFrame")
         right_container = ttk.Frame(self.paned)
+
+        # Populate each side's real content before adding it as a pane, so
+        # the paned window's initial size negotiation has actual widget
+        # sizes to work with instead of two empty frames.
+        self._build_left_panel(left_container)
+        self._build_right_panel(right_container)
+
         self.paned.add(left_container, weight=1)
         self.paned.add(right_container, weight=3)
 
-        self._build_left_panel(left_container)
-        self._build_right_panel(right_container)
         self._build_bottom_panel(self)
 
-        self.after(50, lambda: self._safe_sashpos(self.settings.get("sash_position", 280)))
+        # The window is still withdrawn at this point, so the paned window
+        # has no real width yet to place a sash at. A fixed after() delay
+        # here would race against however long the window manager takes to
+        # actually map and size the window, which varies a lot - if setup
+        # (loading caches, keybinds, theme detection) takes longer than the
+        # delay, the sash gets set before real geometry exists, silently
+        # fails or clamps to ~0, and the left panel ends up invisible.
+        # Instead, wait for the first real <Configure> event that reports
+        # an actual width, then set the sash exactly once.
+        self._sash_applied = False
+        self.paned.bind("<Configure>", self._apply_initial_sashpos)
 
-    def _safe_sashpos(self, pos: int) -> None:
+    def _apply_initial_sashpos(self, _event=None) -> None:
+        if self._sash_applied:
+            return
+        width = self.paned.winfo_width()
+        if width <= 1:
+            return  # geometry not resolved yet; wait for the next <Configure>
+        self._sash_applied = True
+        self.paned.unbind("<Configure>")
+        target = self.settings.get("sash_position", 280)
+        # Guard against a stale/corrupt saved value collapsing either side.
+        min_left, min_right = 220, 260
+        target = max(min_left, min(target, max(min_left, width - min_right)))
         try:
-            self.paned.sashpos(0, pos)
+            self.paned.sashpos(0, target)
         except tk.TclError:
             pass
 
