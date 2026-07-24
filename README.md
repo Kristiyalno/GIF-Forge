@@ -21,10 +21,20 @@ Linux you may need `sudo apt install python3-tk`). Tested on Python 3.12.
   Duplicate, Lock, Hide, Change File / Edit Height, Remove; drag-and-drop
   reordering; click the Visible/Locked columns to toggle them; double-click
   a GIF row to swap its source file, double-click a Space row to edit its
-  height.
+  height. Each GIF layer also has X/Y offset fields and a Width/Height
+  resize with an **Auto Size** toggle - Auto renders at the source GIF's
+  native size (default), turning it off locks in that size as an editable
+  starting point so a layer that's too big for the canvas can be shrunk to
+  fit rather than only ever overflowing past the edge.
 - **Preview** (right panel): animated playback with Play/Pause/Prev/Next
-  and a frame counter for GIF layers, a checkerboard height preview for
-  spaces, and X/Y offset fields for the selected GIF layer.
+  and a frame counter. Selecting a GIF layer previews just that layer,
+  scaled to fit the preview area at its own aspect ratio (a wide or tall
+  GIF fills edge-to-edge, it's never padded into a square). Selecting a
+  transparent space shows a checkerboard height readout. Deselecting
+  everything - press Escape, or click empty space below the last row in
+  the layer list - shows the whole composited canvas instead, animated,
+  at every visible layer's real position and size, so there's always
+  something meaningful on screen either way.
 - **Bottom panel**: output width/height, output filename, Last Byte option
   (None / 21 / 2C), output Duration (Auto or Custom, see below), a
   live-updating Resolution / Estimated Frames / Estimated Duration /

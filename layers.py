@@ -3,7 +3,7 @@
 Two kinds of layers exist:
 
 * GifLayer  - references a source GIF file on disk plus a manual (x, y)
-              nudge offset.
+              nudge offset and an optional (width, height) resize.
 * SpaceLayer - a fixed-height transparent gap.
 
 Layers are arranged top-to-bottom in a list. For layout purposes they stack
@@ -12,6 +12,12 @@ the combined height of every layer above it, and its x/y offset then nudges
 it further from that default. Transparent spaces simply add to that running
 height without painting anything, which is what "contribute vertical
 spacing before following layers" means in practice.
+
+A GifLayer's width/height default to None, meaning "Auto" - it renders at
+whatever size the source GIF naturally decodes to, and going outside the
+canvas is a matter of nudging its position. Setting an explicit width/height
+instead resizes the GIF's frames to fit, so a layer that's too big for the
+canvas can be shrunk to fit inside it rather than only ever overflowing.
 """
 
 from __future__ import annotations
@@ -44,6 +50,8 @@ class GifLayer(Layer):
     file_path: str = ""
     x_offset: int = 0
     y_offset: int = 0
+    width: Optional[int] = None   # None = Auto (native GIF size)
+    height: Optional[int] = None  # None = Auto (native GIF size)
 
     kind: str = "gif"
 
@@ -51,12 +59,18 @@ class GifLayer(Layer):
     def display_name(self) -> str:
         return safe_basename(self.file_path)
 
+    @property
+    def auto_size(self) -> bool:
+        return self.width is None and self.height is None
+
     def to_dict(self) -> dict:
         d = super().to_dict()
         d.update({
             "file_path": self.file_path,
             "x_offset": self.x_offset,
             "y_offset": self.y_offset,
+            "width": self.width,
+            "height": self.height,
         })
         return d
 
@@ -69,6 +83,8 @@ class GifLayer(Layer):
             file_path=d.get("file_path", ""),
             x_offset=d.get("x_offset", 0),
             y_offset=d.get("y_offset", 0),
+            width=d.get("width"),
+            height=d.get("height"),
         )
 
     def clone(self) -> "GifLayer":
@@ -79,6 +95,8 @@ class GifLayer(Layer):
             file_path=self.file_path,
             x_offset=self.x_offset,
             y_offset=self.y_offset,
+            width=self.width,
+            height=self.height,
         )
 
     def change_source(self, new_path: str) -> None:

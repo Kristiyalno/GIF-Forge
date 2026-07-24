@@ -225,6 +225,15 @@ class MainWindow(tk.Tk):
         self._sash_applied = False
         self.paned.bind("<Configure>", self._apply_initial_sashpos)
 
+        # Local bind (not bind_all): only fires while a main-window widget
+        # has focus, so it can't interfere with a child dialog's own
+        # Escape handling (e.g. KeyPickerDialog cancelling a capture).
+        self.bind("<Escape>", self._on_escape)
+
+    def _on_escape(self, _event=None) -> None:
+        if self.layer_tree.selection():
+            self.layer_tree.selection_remove(*self.layer_tree.selection())
+
     def _apply_initial_sashpos(self, _event=None) -> None:
         if self._sash_applied:
             return
@@ -288,7 +297,7 @@ class MainWindow(tk.Tk):
         self.layer_tree.bind(context_button, self._show_context_menu)
 
         offset_frame = ttk.Frame(parent, style="Panel.TFrame")
-        offset_frame.pack(fill="x", padx=10, pady=(0, 10))
+        offset_frame.pack(fill="x", padx=10, pady=(0, 4))
         ttk.Label(offset_frame, text="X Offset", style="Panel.TLabel").grid(row=0, column=0, sticky="w")
         self.x_offset_var = tk.IntVar(value=0)
         self.x_offset_spin = ttk.Spinbox(offset_frame, from_=-99999, to=99999, textvariable=self.x_offset_var,
@@ -304,11 +313,54 @@ class MainWindow(tk.Tk):
         self.y_offset_spin.grid(row=0, column=3, padx=(6, 0))
         self.y_offset_spin.bind("<Return>", self._on_offset_change)
         self.y_offset_spin.bind("<FocusOut>", self._on_offset_change)
+
+        size_frame = ttk.Frame(parent, style="Panel.TFrame")
+        size_frame.pack(fill="x", padx=10, pady=(0, 10))
+        self.auto_size_var = tk.BooleanVar(value=True)
+        self.auto_size_check = ttk.Checkbutton(size_frame, text="Auto Size", variable=self.auto_size_var,
+                                                command=self._on_auto_size_toggle)
+        self.auto_size_check.grid(row=0, column=0, columnspan=4, sticky="w", pady=(0, 4))
+
+        ttk.Label(size_frame, text="Width", style="Panel.TLabel").grid(row=1, column=0, sticky="w")
+        self.layer_width_var = tk.IntVar(value=0)
+        self.layer_width_spin = ttk.Spinbox(size_frame, from_=1, to=10000, textvariable=self.layer_width_var,
+                                             width=8, command=self._on_layer_size_change)
+        self.layer_width_spin.grid(row=1, column=1, padx=(6, 12))
+        self.layer_width_spin.bind("<Return>", self._on_layer_size_change)
+        self.layer_width_spin.bind("<FocusOut>", self._on_layer_size_change)
+
+        ttk.Label(size_frame, text="Height", style="Panel.TLabel").grid(row=1, column=2, sticky="w")
+        self.layer_height_var = tk.IntVar(value=0)
+        self.layer_height_spin = ttk.Spinbox(size_frame, from_=1, to=10000, textvariable=self.layer_height_var,
+                                              width=8, command=self._on_layer_size_change)
+        self.layer_height_spin.grid(row=1, column=3, padx=(6, 0))
+        self.layer_height_spin.bind("<Return>", self._on_layer_size_change)
+        self.layer_height_spin.bind("<FocusOut>", self._on_layer_size_change)
+
         self._set_offset_controls_state("disabled")
+        self._set_size_controls_state("disabled")
 
     def _set_offset_controls_state(self, state: str) -> None:
         self.x_offset_spin.configure(state=state)
         self.y_offset_spin.configure(state=state)
+
+    def _set_size_controls_state(self, state: str) -> None:
+        """state: 'disabled' (no GIF layer selected) or 'normal' (a GIF layer is selected)."""
+        self.auto_size_check.configure(state=state)
+        # The width/height spinboxes are additionally gated by Auto Size
+        # itself even when a layer is selected - only editable in Custom mode.
+        spin_state = "disabled"
+        if state == "normal" and not self.auto_size_var.get():
+            spin_state = "normal"
+        self.layer_width_spin.configure(state=spin_state)
+        self.layer_height_spin.configure(state=spin_state)
+
+    def _native_size_for(self, layer: GifLayer):
+        try:
+            decoded = self.cache.get_or_decode(layer.file_path)
+            return decoded.size
+        except (OSError, ValueError):
+            return (100, 100)
 
     # ---------------------------------------------------------- right
     def _build_right_panel(self, parent: ttk.Frame) -> None:
@@ -547,17 +599,27 @@ class MainWindow(tk.Tk):
             self.layer_tree.see(target)
         else:
             self._selected_layer_id = None
-            self.preview_panel.clear()
+            self._show_deselected_preview()
             self._set_offset_controls_state("disabled")
+            self._set_size_controls_state("disabled")
         self._update_output_info()
         self._update_title()
+
+    def _show_deselected_preview(self) -> None:
+        """Nothing is selected: show the whole composited canvas instead of
+        an empty placeholder, so there's always something meaningful shown."""
+        if self.project.layers:
+            self.preview_panel.show_composite(self.project, self.cache)
+        else:
+            self.preview_panel.clear()
 
     def _on_layer_select(self, _event=None) -> None:
         selection = self.layer_tree.selection()
         if not selection:
             self._selected_layer_id = None
-            self.preview_panel.clear()
+            self._show_deselected_preview()
             self._set_offset_controls_state("disabled")
+            self._set_size_controls_state("disabled")
             return
         self._selected_layer_id = selection[0]
         layer = self._selected_layer()
@@ -566,9 +628,18 @@ class MainWindow(tk.Tk):
             self.x_offset_var.set(layer.x_offset)
             self.y_offset_var.set(layer.y_offset)
             self._set_offset_controls_state("normal")
+            self.auto_size_var.set(layer.auto_size)
+            if layer.auto_size:
+                w, h = self._native_size_for(layer)
+            else:
+                w, h = layer.width, layer.height
+            self.layer_width_var.set(w)
+            self.layer_height_var.set(h)
+            self._set_size_controls_state("normal")
         elif isinstance(layer, SpaceLayer):
             self.preview_panel.show_space_layer(layer)
             self._set_offset_controls_state("disabled")
+            self._set_size_controls_state("disabled")
 
     def _on_layer_double_click(self, event) -> None:
         item = self.layer_tree.identify_row(event.y)
@@ -583,13 +654,16 @@ class MainWindow(tk.Tk):
             self.edit_height_selected()
 
     def _on_layer_click(self, event) -> None:
+        item = self.layer_tree.identify_row(event.y)
+        if not item:
+            # Clicked on empty space below the last row - deselect everything.
+            if self.layer_tree.selection():
+                self.layer_tree.selection_remove(*self.layer_tree.selection())
+            return
         region = self.layer_tree.identify_region(event.x, event.y)
         if region != "cell":
             return
         column = self.layer_tree.identify_column(event.x)
-        item = self.layer_tree.identify_row(event.y)
-        if not item:
-            return
         self.layer_tree.selection_set(item)
         self._selected_layer_id = item
         layer = self._selected_layer()
@@ -624,6 +698,53 @@ class MainWindow(tk.Tk):
         self._update_output_info()
         self._update_title()
 
+    def _on_auto_size_toggle(self) -> None:
+        layer = self._selected_layer()
+        if not isinstance(layer, GifLayer):
+            return
+        self._push_undo()
+        if self.auto_size_var.get():
+            layer.width = None
+            layer.height = None
+            w, h = self._native_size_for(layer)
+        else:
+            # Lock in the layer's current effective size as the starting
+            # point for manual resizing, rather than snapping to 0.
+            w, h = self._native_size_for(layer) if layer.width is None else (layer.width, layer.height)
+            layer.width = w
+            layer.height = h
+        self.layer_width_var.set(w)
+        self.layer_height_var.set(h)
+        self._set_size_controls_state("normal")
+        self._mark_dirty()
+        self._update_output_info()
+        self._update_title()
+
+    def _on_layer_size_change(self, _event=None) -> None:
+        layer = self._selected_layer()
+        if not isinstance(layer, GifLayer) or layer.auto_size:
+            return
+        try:
+            new_w = max(1, int(self.layer_width_var.get()))
+            new_h = max(1, int(self.layer_height_var.get()))
+        except (tk.TclError, ValueError):
+            return
+        if new_w == layer.width and new_h == layer.height:
+            return
+        self._push_undo()
+        layer.width = new_w
+        layer.height = new_h
+        self._mark_dirty()
+        self._update_output_info()
+        self._update_title()
+
+    def _refresh_composite_if_showing(self) -> None:
+        """If the preview is currently showing the deselected whole-canvas
+        view, rebuild it to reflect a change that would affect it (canvas
+        size or duration)."""
+        if self.preview_panel.showing_composite:
+            self.preview_panel.show_composite(self.project, self.cache)
+
     def _on_canvas_size_change(self, _event=None) -> None:
         try:
             w = max(1, int(self.width_var.get()))
@@ -638,6 +759,7 @@ class MainWindow(tk.Tk):
         self._mark_dirty()
         self._update_output_info()
         self._update_title()
+        self._refresh_composite_if_showing()
 
     def _on_filename_change(self, _event=None) -> None:
         name = self.filename_var.get().strip()
@@ -670,6 +792,7 @@ class MainWindow(tk.Tk):
         self.project.duration_mode = mode
         self._mark_dirty()
         self._update_output_info()
+        self._refresh_composite_if_showing()
 
     def _on_custom_duration_change(self, _event=None) -> None:
         try:
@@ -683,6 +806,7 @@ class MainWindow(tk.Tk):
         self._mark_dirty()
         if self.project.duration_mode == "custom":
             self._update_output_info()
+            self._refresh_composite_if_showing()
 
     # --------------------------------------------------------- context menu
     def _show_context_menu(self, event) -> None:

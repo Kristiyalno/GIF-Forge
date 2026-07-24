@@ -47,6 +47,21 @@ class LayerLayout:
     height: int
 
 
+def effective_size(layer: GifLayer, cache: GifCache) -> Tuple[int, int]:
+    """The layer's rendered size: its explicit width/height if set (resized),
+    otherwise the source GIF's native decoded size (Auto)."""
+    native_w = native_h = 0
+    if layer.file_path:
+        try:
+            decoded = cache.get_or_decode(layer.file_path)
+            native_w, native_h = decoded.size
+        except (OSError, ValueError):
+            pass
+    width = layer.width if layer.width else native_w
+    height = layer.height if layer.height else native_h
+    return width, height
+
+
 def compute_layout(layers: List[Layer], cache: GifCache) -> List[LayerLayout]:
     """Compute each layer's stacked (x, y, width, height) box in canvas space."""
     result = []
@@ -56,13 +71,7 @@ def compute_layout(layers: List[Layer], cache: GifCache) -> List[LayerLayout]:
             result.append(LayerLayout(layer=layer, x=0, y=running_y, width=0, height=layer.height))
             running_y += layer.height
         elif isinstance(layer, GifLayer):
-            width = height = 0
-            if layer.file_path:
-                try:
-                    decoded = cache.get_or_decode(layer.file_path)
-                    width, height = decoded.size
-                except (OSError, ValueError):
-                    pass
+            width, height = effective_size(layer, cache)
             x = layer.x_offset
             y = running_y + layer.y_offset
             result.append(LayerLayout(layer=layer, x=x, y=y, width=width, height=height))
@@ -98,6 +107,91 @@ def estimate_frames_and_duration(project: Project, cache: GifCache) -> Tuple[int
     total_ms = resolve_duration_ms(project, durations)
     master = compute_master_timeline(durations, total_ms)
     return len(master.cut_points_ms), master.total_ms
+
+
+def build_composite_preview_frames(
+    project: Project,
+    cache: GifCache,
+    max_size: Tuple[int, int] = (240, 240),
+    max_preview_ms: int = 15000,
+    max_preview_frames: int = 240,
+):
+    """Composite the whole canvas (every visible layer, at its real position
+    and size) into a small set of preview frames, scaled to fit within
+    max_size. Used for the "nothing selected" preview - bounded by
+    max_preview_ms/max_preview_frames so an oversized Custom duration can't
+    hang the UI, independent of the real export which stays exact.
+
+    Returns (frames, durations_ms, canvas_size) - frames is a list of RGBA
+    PIL Images already sized to canvas_size, or ([], [], (w, h)) if there's
+    nothing visible to composite.
+    """
+    canvas_w, canvas_h = max(1, project.output_width), max(1, project.output_height)
+    gif_layers = [l for l in project.gif_layers() if l.visible and l.file_path]
+
+    decoded_by_id = {}
+    for layer in gif_layers:
+        try:
+            decoded_by_id[layer.id] = cache.get_or_decode(layer.file_path)
+        except (OSError, ValueError):
+            pass
+    gif_layers = [l for l in gif_layers if l.id in decoded_by_id]
+    if not gif_layers:
+        return [], [], (canvas_w, canvas_h)
+
+    durations = {lid: d.durations_ms for lid, d in decoded_by_id.items()}
+    total_ms = min(resolve_duration_ms(project, durations), max_preview_ms)
+    master = compute_master_timeline(durations, total_ms)
+
+    cut_points = master.cut_points_ms
+    sampled = len(cut_points) > max_preview_frames
+    if sampled:
+        step = len(cut_points) / max_preview_frames
+        cut_points = [cut_points[int(i * step)] for i in range(max_preview_frames)]
+
+    layout = compute_layout(project.layers, cache)
+    layout_by_id = {lo.layer.id: lo for lo in layout if isinstance(lo.layer, GifLayer)}
+
+    # Composite at a scaled-down working resolution from the start (rather
+    # than full canvas size then downscale) so this stays fast regardless
+    # of how large the configured output canvas is.
+    scale = min(max_size[0] / canvas_w, max_size[1] / canvas_h, 1.0)
+    preview_canvas_size = (max(1, round(canvas_w * scale)), max(1, round(canvas_h * scale)))
+
+    scaled_frames_by_id = {}
+    scaled_pos_by_id = {}
+    for layer in gif_layers:
+        lo = layout_by_id.get(layer.id)
+        if lo is None or lo.width <= 0 or lo.height <= 0:
+            continue
+        target_w = max(1, round(lo.width * scale))
+        target_h = max(1, round(lo.height * scale))
+        decoded = decoded_by_id[layer.id]
+        scaled_frames_by_id[layer.id] = [
+            frame.resize((target_w, target_h), Image.LANCZOS) for frame in decoded.frames
+        ]
+        scaled_pos_by_id[layer.id] = (round(lo.x * scale), round(lo.y * scale))
+
+    frames = []
+    for t in cut_points:
+        canvas = Image.new("RGBA", preview_canvas_size, (0, 0, 0, 0))
+        for layer in gif_layers:
+            if layer.id not in scaled_frames_by_id:
+                continue
+            tl = master.layer_timelines.get(layer.id)
+            if tl is None:
+                continue
+            frame_idx = tl.frame_index_at(t)
+            canvas.alpha_composite(scaled_frames_by_id[layer.id][frame_idx], dest=scaled_pos_by_id[layer.id])
+        frames.append(canvas)
+
+    if sampled:
+        per_frame = max(20, total_ms // max(1, len(cut_points)))
+        frame_durations = [per_frame] * len(cut_points)
+    else:
+        frame_durations = master_frame_durations(master)
+
+    return frames, frame_durations, preview_canvas_size
 
 
 def _to_gif_frame(rgba_image: Image.Image) -> Image.Image:
@@ -182,6 +276,23 @@ class RenderEngine:
         layout = compute_layout(project.layers, self.cache)
         layout_by_id = {lo.layer.id: lo for lo in layout if isinstance(lo.layer, GifLayer)}
 
+        # Layers with an explicit (non-Auto) size get their frames resized
+        # once here, rather than repeatedly during compositing.
+        render_frames_by_id: dict = {}
+        for layer in gif_layers:
+            self._check_cancelled()
+            decoded = decoded_by_id[layer.id]
+            lo = layout_by_id.get(layer.id)
+            if lo is None:
+                continue
+            target_size = (max(1, lo.width), max(1, lo.height))
+            if target_size == decoded.size:
+                render_frames_by_id[layer.id] = decoded.frames
+            else:
+                render_frames_by_id[layer.id] = [
+                    frame.resize(target_size, Image.LANCZOS) for frame in decoded.frames
+                ]
+
         canvas_size = (max(1, project.output_width), max(1, project.output_height))
         total_frames = len(master.cut_points_ms)
         output_frames: List[Image.Image] = []
@@ -198,7 +309,7 @@ class RenderEngine:
                 if tl is None:
                     continue
                 frame_idx = tl.frame_index_at(cut_ms)
-                source_frame = decoded_by_id[layer.id].frames[frame_idx]
+                source_frame = render_frames_by_id[layer.id][frame_idx]
                 canvas.alpha_composite(source_frame, dest=(lo.x, lo.y))
             output_frames.append(_to_gif_frame(canvas))
             if total_frames:
